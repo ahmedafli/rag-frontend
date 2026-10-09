@@ -19,6 +19,7 @@ import {
   Sparkles,
   Database,
   Check,
+  Table,
 } from "lucide-react";
 
 const API_BASE_URL =
@@ -256,15 +257,129 @@ function DocumentSelector({
 
 /* ── Source Card ─────────────────────────────────────────────────────────────── */
 
+/* ── Citation Helpers ──────────────────────────────────────────────────────── */
+
+/**
+ * Extract all citation numbers referenced in text like "[1]", "[2]‑[5]", "[1, 3]"
+ */
+function extractCitedNumbers(text: string): Set<number> {
+  const cited = new Set<number>();
+  const regex = /\[([0-9\s,\-‑–]+)\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const inner = match[1];
+    const parts = inner.split(/[,]+/);
+    for (const part of parts) {
+      const rangeMatch = part.trim().match(/^(\d+)\s*[-‑–]\s*(\d+)$/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1], 10);
+        const end = parseInt(rangeMatch[2], 10);
+        if (!isNaN(start) && !isNaN(end) && start <= end && end - start < 50) {
+          for (let i = start; i <= end; i++) cited.add(i);
+        }
+      } else {
+        const num = parseInt(part.trim(), 10);
+        if (!isNaN(num)) cited.add(num);
+      }
+    }
+  }
+  return cited;
+}
+
+/**
+ * Render answer text with interactive [n] citation buttons
+ */
+function FormattedAnswer({
+  content,
+  onCitationClick,
+}: {
+  content: string;
+  onCitationClick: (num: number) => void;
+}) {
+  const citationRegex = /(\[[0-9\s,\-‑–]+\])/g;
+  const segments = content.split(citationRegex);
+
+  return (
+    <>
+      {segments.map((segment, idx) => {
+        const match = segment.match(/^\[([0-9\s,\-‑–]+)\]$/);
+        if (!match) {
+          return <React.Fragment key={idx}>{segment}</React.Fragment>;
+        }
+
+        const inner = match[1].trim();
+        // Single citation number like "[1]"
+        if (/^\d+$/.test(inner)) {
+          const num = parseInt(inner, 10);
+          return (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => onCitationClick(num)}
+              className="inline-flex items-center justify-center font-sans text-xs font-semibold px-1.5 py-0.5 mx-0.5 rounded-md bg-blue-100 text-blue-700 hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer align-baseline shadow-2xs"
+              title={`Jump to source [${num}]`}
+            >
+              [{num}]
+            </button>
+          );
+        }
+
+        // Multiple citations or range like "[1, 2]" or "[2]‑[5]"
+        const tokens = inner.split(/(\d+)/g);
+        return (
+          <span
+            key={idx}
+            className="inline-flex items-center mx-0.5 align-baseline text-xs font-sans"
+          >
+            <span className="text-gray-400 font-semibold">[</span>
+            {tokens.map((token, tIdx) => {
+              if (/^\d+$/.test(token)) {
+                const num = parseInt(token, 10);
+                return (
+                  <button
+                    key={tIdx}
+                    type="button"
+                    onClick={() => onCitationClick(num)}
+                    className="px-1 py-0.5 rounded font-semibold text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer"
+                    title={`Jump to source [${num}]`}
+                  >
+                    {num}
+                  </button>
+                );
+              }
+              return (
+                <span key={tIdx} className="text-gray-400 font-medium px-0.5">
+                  {token}
+                </span>
+              );
+            })}
+            <span className="text-gray-400 font-semibold">]</span>
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/* ── Source Card ─────────────────────────────────────────────────────────────── */
+
+interface SourceCardProps {
+  source: Source;
+  index: number;
+  documents?: DocumentItem[];
+  messageId: string;
+  isHighlighted?: boolean;
+}
+
 function SourceCard({
   source,
   index,
   documents = [],
-}: {
-  source: Source;
-  index: number;
-  documents?: DocumentItem[];
-}) {
+  messageId,
+  isHighlighted = false,
+}: SourceCardProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   // Extract source filename or identifier from backend fields
   const rawSource =
     (typeof source.source === "string" && source.source) ||
@@ -291,46 +406,97 @@ function SourceCard({
   const citationNum = typeof source.n === "number" ? source.n : index + 1;
 
   // Page number
-  const rawPage = source.page ?? source.page_number;
-  const page = rawPage !== undefined && rawPage !== null ? `p. ${rawPage}` : null;
-
-  // Score (e.g. rerank_score, score, similarity)
-  const rawScore = source.rerank_score ?? source.score ?? source.similarity;
-  const score =
-    typeof rawScore === "number"
-      ? rawScore <= 1
-        ? `${(rawScore * 100).toFixed(0)}% match`
-        : `score: ${rawScore.toFixed(2)}`
+  const rawPage =
+    source.page ??
+    source.page_number ??
+    (source.metadata && typeof source.metadata === "object"
+      ? (source.metadata as Record<string, unknown>).page
+      : undefined);
+  const page =
+    rawPage !== undefined && rawPage !== null && rawPage !== ""
+      ? `p. ${rawPage}`
       : null;
 
-  // Content snippet
-  const contentSnippet =
+  // Check for table type
+  const isTable: boolean = Boolean(
+    source.type === "table" ||
+      source.chunk_type === "table" ||
+      (source.metadata &&
+        typeof source.metadata === "object" &&
+        (source.metadata as Record<string, unknown>).type === "table")
+  );
+
+  // Passage excerpt (~200 characters)
+  const fullText =
     (typeof source.content === "string" && source.content) ||
     (typeof source.text === "string" && source.text) ||
     (typeof source.chunk === "string" && source.chunk) ||
-    null;
+    "";
+
+  const isLong = fullText.length > 200;
+  const excerpt = isLong ? `${fullText.slice(0, 200).trim()}...` : fullText;
 
   return (
-    <div className="flex items-start gap-2.5 p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs">
-      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center text-[10px]">
-        {citationNum}
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          {fileIcon(displayFilename)}
-          <span className="font-semibold text-gray-700 truncate" title={displayFilename}>
-            {displayFilename}
-          </span>
+    <div
+      id={`source-card-${messageId}-${citationNum}`}
+      className={`p-3 rounded-xl border text-xs transition-all duration-300 ${
+        isHighlighted
+          ? "bg-blue-50 border-blue-400 ring-2 ring-blue-400/50 shadow-md"
+          : "bg-slate-50 border-slate-200/80 hover:border-slate-300"
+      }`}
+    >
+      <div className="flex items-start gap-2.5">
+        <span
+          className={`flex-shrink-0 w-5 h-5 rounded-full font-bold flex items-center justify-center text-[10px] transition-colors ${
+            isHighlighted
+              ? "bg-blue-600 text-white shadow-xs"
+              : "bg-blue-100 text-blue-700"
+          }`}
+        >
+          {citationNum}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+            {fileIcon(displayFilename)}
+            <span
+              className="font-semibold text-gray-800 truncate max-w-[240px]"
+              title={displayFilename}
+            >
+              {displayFilename}
+            </span>
+
+            {page && (
+              <span className="text-gray-500 font-medium text-[11px] bg-white border border-gray-200 px-1.5 py-0.2 rounded">
+                {page}
+              </span>
+            )}
+
+            {isTable && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                <Table className="w-3 h-3 text-amber-600" />
+                Table
+              </span>
+            )}
+          </div>
+
+          {fullText && (
+            <div className="mt-2">
+              <blockquote className="pl-2.5 border-l-2 border-slate-300 text-xs text-slate-600 italic leading-relaxed whitespace-pre-wrap">
+                &ldquo;{isExpanded ? fullText : excerpt}&rdquo;
+              </blockquote>
+
+              {isLong && (
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="mt-1.5 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition-colors cursor-pointer inline-flex items-center gap-1"
+                >
+                  {isExpanded ? "Show less" : "Show full passage"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2 text-gray-400">
-          {page && <span>{page}</span>}
-          {score && <span>{score}</span>}
-        </div>
-        {contentSnippet && (
-          <p className="text-gray-500 mt-1 line-clamp-2 leading-relaxed">
-            {contentSnippet}
-          </p>
-        )}
       </div>
     </div>
   );
@@ -346,6 +512,70 @@ function ChatMessage({
   documents?: DocumentItem[];
 }) {
   const isUser = message.role === "user";
+  const [highlightedNum, setHighlightedNum] = useState<number | null>(null);
+  const [showOther, setShowOther] = useState(false);
+  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Parse cited numbers from content
+  const citedNumbers = React.useMemo(() => {
+    return extractCitedNumbers(message.content);
+  }, [message.content]);
+
+  // Separate sources into cited and uncited
+  const { citedSources, uncitedSources } = React.useMemo(() => {
+    if (!message.sources || message.sources.length === 0) {
+      return { citedSources: [], uncitedSources: [] };
+    }
+    const cited: Source[] = [];
+    const uncited: Source[] = [];
+
+    message.sources.forEach((src, idx) => {
+      const num = typeof src.n === "number" ? src.n : idx + 1;
+      if (citedNumbers.has(num)) {
+        cited.push(src);
+      } else {
+        uncited.push(src);
+      }
+    });
+
+    return { citedSources: cited, uncitedSources: uncited };
+  }, [message.sources, citedNumbers]);
+
+  const handleCitationClick = useCallback(
+    (num: number) => {
+      // If target card is in the uncited section, auto-expand it
+      const isUncited = uncitedSources.some((src, idx) => {
+        const n =
+          typeof src.n === "number"
+            ? src.n
+            : message.sources!.indexOf(src) + 1;
+        return n === num;
+      });
+      if (isUncited) {
+        setShowOther(true);
+      }
+
+      setHighlightedNum(num);
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = setTimeout(() => {
+        setHighlightedNum(null);
+      }, 2500);
+
+      // Smooth scroll to card
+      setTimeout(() => {
+        const el = document.getElementById(
+          `source-card-${message.id}-${num}`
+        );
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      }, 60);
+    },
+    [message.id, message.sources, uncitedSources]
+  );
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
@@ -355,15 +585,18 @@ function ChatMessage({
       )}
 
       <div
-        className={`max-w-[75%] flex flex-col gap-2 ${isUser ? "items-end" : "items-start"}`}
+        className={`max-w-[80%] flex flex-col gap-2 ${
+          isUser ? "items-end" : "items-start"
+        }`}
       >
         <div
-          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${isUser
+          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+            isUser
               ? "bg-blue-600 text-white rounded-br-sm shadow-sm"
               : message.isError
                 ? "bg-red-50 text-red-700 border border-red-100 rounded-bl-sm"
                 : "bg-white text-gray-800 border border-gray-100 rounded-bl-sm shadow-xs"
-            }`}
+          }`}
         >
           {message.isError && (
             <div className="flex items-center gap-1.5 mb-1.5 font-semibold text-red-800">
@@ -371,17 +604,109 @@ function ChatMessage({
               <span>Error</span>
             </div>
           )}
-          {message.content}
+          {isUser || message.isError ? (
+            message.content
+          ) : (
+            <FormattedAnswer
+              content={message.content}
+              onCitationClick={handleCitationClick}
+            />
+          )}
         </div>
 
+        {/* Sources list */}
         {message.sources && message.sources.length > 0 && (
-          <div className="w-full space-y-1.5">
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-1">
-              Sources
-            </p>
-            {message.sources.map((src, i) => (
-              <SourceCard key={i} source={src} index={i} documents={documents} />
-            ))}
+          <div className="w-full space-y-2 mt-1">
+            {/* Cited Sources */}
+            {citedSources.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-1">
+                  Cited Sources ({citedSources.length})
+                </p>
+                {citedSources.map((src, i) => {
+                  const citationNum =
+                    typeof src.n === "number"
+                      ? src.n
+                      : message.sources!.indexOf(src) + 1;
+                  return (
+                    <SourceCard
+                      key={`cited-${i}`}
+                      source={src}
+                      index={message.sources!.indexOf(src)}
+                      documents={documents}
+                      messageId={message.id}
+                      isHighlighted={highlightedNum === citationNum}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {/* If no sources were cited explicitly in answer text, show all in other/sources */}
+            {citedSources.length === 0 && uncitedSources.length === 0 && (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-1">
+                  Sources
+                </p>
+                {message.sources.map((src, i) => (
+                  <SourceCard
+                    key={i}
+                    source={src}
+                    index={i}
+                    documents={documents}
+                    messageId={message.id}
+                    isHighlighted={
+                      highlightedNum ===
+                      (typeof src.n === "number" ? src.n : i + 1)
+                    }
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Uncited sources in collapsed section */}
+            {uncitedSources.length > 0 && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowOther((prev) => !prev)}
+                  className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200/60 text-xs font-medium text-gray-600 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <BookOpen className="w-3.5 h-3.5 text-gray-400" />
+                    <span>
+                      Other retrieved passages ({uncitedSources.length})
+                    </span>
+                  </span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${
+                      showOther ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {showOther && (
+                  <div className="mt-2 space-y-2">
+                    {uncitedSources.map((src, i) => {
+                      const citationNum =
+                        typeof src.n === "number"
+                          ? src.n
+                          : message.sources!.indexOf(src) + 1;
+                      return (
+                        <SourceCard
+                          key={`uncited-${i}`}
+                          source={src}
+                          index={message.sources!.indexOf(src)}
+                          documents={documents}
+                          messageId={message.id}
+                          isHighlighted={highlightedNum === citationNum}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
