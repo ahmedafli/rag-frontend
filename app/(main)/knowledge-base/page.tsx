@@ -24,6 +24,7 @@ export default function KnowledgeBasePage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isFetchingInitial, setIsFetchingInitial] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   // Map of active polling interval timers by document ID
   const activePollers = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -32,15 +33,20 @@ export default function KnowledgeBasePage() {
   // Track poll counts per document to enforce a max timeout limit
   const pollCounts = useRef<Map<string, number>>(new Map());
 
-  // Stop polling a specific document ID
-  const stopPolling = useCallback((id: string) => {
-    stoppedPollers.current.add(id);
+  // Clear the polling timer for a document without permanently stopping it
+  const clearPollingTimer = useCallback((id: string) => {
     const timer = activePollers.current.get(id);
     if (timer) {
       clearInterval(timer);
       activePollers.current.delete(id);
     }
   }, []);
+
+  // Permanently stop polling a specific document ID
+  const stopPolling = useCallback((id: string) => {
+    stoppedPollers.current.add(id);
+    clearPollingTimer(id);
+  }, [clearPollingTimer]);
 
   // Poll state for a specific document ID
   const pollDocumentStatus = useCallback(
@@ -51,18 +57,18 @@ export default function KnowledgeBasePage() {
       const currentCount = (pollCounts.current.get(id) || 0) + 1;
       pollCounts.current.set(id, currentCount);
 
-      // Timeout after 30 attempts (60 seconds at 2-second interval)
-      if (currentCount > 30) {
-        console.warn(`[POLL TIMEOUT] Stopped polling doc ${id} after 30 attempts.`);
+      // Timeout after 60 attempts (120 seconds at 2-second interval)
+      if (currentCount > 60) {
+        console.warn(`[POLL TIMEOUT] Stopped polling doc ${id} after 60 attempts.`);
         stopPolling(id);
         setDocuments((prev) =>
           prev.map((doc) =>
             doc.id === id
               ? {
-                  ...doc,
-                  status: "failed",
-                  error_message: "Processing timed out after 60s",
-                }
+                ...doc,
+                status: "failed",
+                error_message: "Processing timed out after 120s",
+              }
               : doc
           )
         );
@@ -97,11 +103,11 @@ export default function KnowledgeBasePage() {
           prev.map((doc) =>
             doc.id === id
               ? {
-                  ...doc,
-                  ...data,
-                  status: isReady ? "ready" : isFailed ? "failed" : "processing",
-                  filename: data.filename || doc.filename,
-                }
+                ...doc,
+                ...data,
+                status: isReady ? "ready" : isFailed ? "failed" : "processing",
+                filename: data.filename || doc.filename,
+              }
               : doc
           )
         );
@@ -121,9 +127,14 @@ export default function KnowledgeBasePage() {
   // Start polling a specific document ID every 2 seconds
   const startPolling = useCallback(
     (id: string) => {
-      if (stoppedPollers.current.has(id)) return;
+      // Clear the permanent-stop flag so polling can proceed
+      stoppedPollers.current.delete(id);
+      // Reset poll count for a fresh start
+      pollCounts.current.delete(id);
+      // Clear any existing timer without marking as permanently stopped
+      clearPollingTimer(id);
 
-      stopPolling(id);
+      // Immediately poll once, then set up interval
       pollDocumentStatus(id);
 
       const timer = setInterval(() => {
@@ -132,7 +143,7 @@ export default function KnowledgeBasePage() {
 
       activePollers.current.set(id, timer);
     },
-    [pollDocumentStatus, stopPolling]
+    [pollDocumentStatus, clearPollingTimer]
   );
 
   // Fetch initial documents list from backend if endpoint is supported
@@ -193,9 +204,53 @@ export default function KnowledgeBasePage() {
     });
   };
 
-  const removeDocument = (id: string) => {
-    stopPolling(id);
-    setDocuments((prev) => prev.filter((doc) => doc.id !== id));
+  const handleDeleteDocument = async (id: string) => {
+    console.log("🗑️ Delete initiated for document ID:", id);
+    if (deletingIds.has(id)) return;
+
+    setDeletingIds((prev) => new Set(prev).add(id));
+
+    try {
+      const url = `${API_BASE_URL}/documents/${id}`;
+      console.log(`[DELETE Request] Sending DELETE to: ${url}`);
+
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      console.log(`[DELETE Response] Status: ${response.status}`, response);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("[DELETE Failed] Server responded with error:", errorData);
+        const errorMessage =
+          errorData.detail || `Failed to delete document (Status: ${response.status})`;
+        alert(errorMessage);
+        return;
+      }
+
+      const responseData = await response.json().catch(() => ({}));
+      console.log("[DELETE Success] Backend returned:", responseData);
+
+      // Stop any active polling timer for this document
+      stopPolling(id);
+
+      // Remove row from interface upon successful backend deletion
+      setDocuments((prev) => prev.filter((doc) => doc.id !== id));
+      console.log("✅ Row removed from UI for document ID:", id);
+    } catch (err) {
+      console.error(`[DELETE Exception] Error deleting document ${id}:`, err);
+      alert(`Failed to connect to backend server: ${err}`);
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   const getFileIcon = (filename: string) => {
@@ -336,11 +391,16 @@ export default function KnowledgeBasePage() {
                     {/* Actions */}
                     <td className="py-4 px-6 text-right">
                       <button
-                        onClick={() => removeDocument(doc.id)}
-                        className="text-gray-400 hover:text-red-600 p-2 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
-                        title="Remove document from table"
+                        onClick={() => handleDeleteDocument(doc.id)}
+                        disabled={deletingIds.has(doc.id)}
+                        className="text-gray-400 hover:text-red-600 p-2 rounded-lg hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Delete document"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        {deletingIds.has(doc.id) ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-red-600" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
                       </button>
                     </td>
                   </tr>
