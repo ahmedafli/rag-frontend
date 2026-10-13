@@ -871,6 +871,31 @@ export default function ChatPage() {
     setQuestion("");
   }, []);
 
+  /* ── Delete a conversation ───────────────────────────────────────────────── */
+  const deleteConversation = useCallback(
+    async (convId: string) => {
+      if (!sessionId) return;
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/conversations/${encodeURIComponent(convId)}?session_id=${encodeURIComponent(sessionId)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) throw new Error("Failed to delete");
+        // Remove from local state
+        setConversations((prev) => prev.filter((c) => c.id !== convId));
+        // If the deleted conversation was active, clear the chat
+        if (conversationId === convId) {
+          setConversationId(null);
+          setMessages([]);
+          setQuestion("");
+        }
+      } catch {
+        /* silently ignore */
+      }
+    },
+    [sessionId, conversationId]
+  );
+
   /* ── Fetch documents ─────────────────────────────────────────────────────── */
   const fetchDocuments = useCallback(async () => {
     setIsLoadingDocs(true);
@@ -1147,30 +1172,45 @@ export default function ChatPage() {
                   });
 
                   return (
-                    <button
+                    <div
                       key={conv.id}
-                      type="button"
-                      onClick={() => loadConversation(conv.id)}
-                      disabled={isLoadingConversation}
-                      className={`w-full text-left px-3 py-2.5 rounded-xl transition-all group cursor-pointer ${
+                      className={`relative flex items-center rounded-xl transition-all group ${
                         isActive
                           ? "bg-blue-50 border border-blue-200 shadow-xs"
                           : "hover:bg-gray-50 border border-transparent"
                       }`}
                     >
-                      <p
-                        className={`text-sm font-medium truncate ${
-                          isActive ? "text-blue-800" : "text-gray-700"
-                        }`}
-                        title={conv.title}
+                      <button
+                        type="button"
+                        onClick={() => loadConversation(conv.id)}
+                        disabled={isLoadingConversation}
+                        className="flex-1 text-left px-3 py-2.5 cursor-pointer min-w-0"
                       >
-                        {conv.title || "Untitled chat"}
-                      </p>
-                      <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {dateStr} · {timeStr}
-                      </p>
-                    </button>
+                        <p
+                          className={`text-sm font-medium truncate ${
+                            isActive ? "text-blue-800" : "text-gray-700"
+                          }`}
+                          title={conv.title}
+                        >
+                          {conv.title || "Untitled chat"}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {dateStr} · {timeStr}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteConversation(conv.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1.5 mr-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all cursor-pointer flex-shrink-0"
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   );
                 })}
               </div>
