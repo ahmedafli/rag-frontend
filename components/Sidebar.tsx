@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Database,
   MessageSquare,
-  Key,
   LogOut,
   Menu,
   X,
@@ -24,26 +23,20 @@ const navItems: NavItem[] = [
   {
     name: "Dashboard",
     href: "/dashboard",
-    icon: LayoutDashboard,
     id: "nav-dashboard",
+    icon: LayoutDashboard,
   },
   {
     name: "Knowledge Base",
     href: "/knowledge-base",
-    icon: Database,
     id: "nav-knowledge-base",
+    icon: Database,
   },
   {
     name: "Chat",
     href: "/chat",
-    icon: MessageSquare,
     id: "nav-chat",
-  },
-  {
-    name: "API Keys",
-    href: "/api-keys",
-    icon: Key,
-    id: "nav-api-keys",
+    icon: MessageSquare,
   },
 ];
 

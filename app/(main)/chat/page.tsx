@@ -20,6 +20,11 @@ import {
   Database,
   Check,
   Table,
+  Plus,
+  Clock,
+  Trash2,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 const API_BASE_URL =
@@ -51,6 +56,34 @@ interface Message {
   content: string;
   sources?: Source[];
   isError?: boolean;
+}
+
+interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at?: string;
+  message_count?: number;
+}
+
+interface ConversationDetail {
+  id: string;
+  title: string;
+  messages: { role: "user" | "assistant"; content: string; sources?: Source[] }[];
+}
+
+/* ── Session helper ────────────────────────────────────────────────────────── */
+
+const SESSION_KEY = "rag_session_id";
+
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") return "";
+  let sid = localStorage.getItem(SESSION_KEY);
+  if (!sid) {
+    sid = crypto.randomUUID();
+    localStorage.setItem(SESSION_KEY, sid);
+  }
+  return sid;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
@@ -735,8 +768,108 @@ export default function ChatPage() {
   const [question, setQuestion] = useState("");
   const [isAsking, setIsAsking] = useState(false);
 
+  /* Conversation persistence state */
+  const [sessionId, setSessionId] = useState<string>("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
+  const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /* ── Initialize session_id from localStorage ─────────────────────────────── */
+  useEffect(() => {
+    setSessionId(getOrCreateSessionId());
+  }, []);
+
+  /* ── Fetch conversations list ────────────────────────────────────────────── */
+  const fetchConversations = useCallback(async (sid: string) => {
+    if (!sid) return;
+    setIsLoadingConversations(true);
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/conversations?session_id=${encodeURIComponent(sid)}`
+      );
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      if (Array.isArray(data)) setConversations(data);
+    } catch {
+      /* silently ignore – sidebar just stays empty */
+    } finally {
+      setIsLoadingConversations(false);
+    }
+  }, []);
+
+  /* ── Load a specific conversation by id ──────────────────────────────────── */
+  const loadConversation = useCallback(
+    async (convId: string) => {
+      if (!sessionId) return;
+      setIsLoadingConversation(true);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/conversations/${encodeURIComponent(convId)}?session_id=${encodeURIComponent(sessionId)}`
+        );
+        if (!res.ok) throw new Error("Failed");
+        const data: ConversationDetail = await res.json();
+        setConversationId(data.id);
+        const loadedMessages: Message[] = (data.messages || []).map(
+          (m, idx) => ({
+            id: uid(),
+            role: m.role,
+            content: m.content,
+            sources: m.sources,
+          })
+        );
+        setMessages(loadedMessages);
+      } catch {
+        /* if load fails just start fresh */
+      } finally {
+        setIsLoadingConversation(false);
+      }
+    },
+    [sessionId]
+  );
+
+  /* ── On mount: fetch conversations list, then auto-load latest ──────────── */
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    (async () => {
+      setIsLoadingConversations(true);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/conversations?session_id=${encodeURIComponent(sessionId)}`
+        );
+        if (!res.ok) throw new Error("Failed");
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data)) {
+          setConversations(data);
+          // Auto-load the most recent conversation (first in the list)
+          if (data.length > 0 && !conversationId) {
+            await loadConversation(data[0].id);
+          }
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) setIsLoadingConversations(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  /* ── Start a new chat ────────────────────────────────────────────────────── */
+  const handleNewChat = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
+    setQuestion("");
+  }, []);
 
   /* ── Fetch documents ─────────────────────────────────────────────────────── */
   const fetchDocuments = useCallback(async () => {
@@ -847,7 +980,14 @@ export default function ChatPage() {
     setIsAsking(true);
 
     try {
-      const body: Record<string, unknown> = { question: q, k: 5 };
+      const body: Record<string, unknown> = {
+        question: q,
+        k: 5,
+        session_id: sessionId,
+      };
+      if (conversationId) {
+        body.conversation_id = conversationId;
+      }
       if (sourceFilenames && sourceFilenames.length > 0) {
         body.source_filenames = sourceFilenames;
       }
@@ -875,6 +1015,11 @@ export default function ChatPage() {
 
       const data = await res.json();
 
+      // Save the returned conversation_id for subsequent messages
+      if (data.conversation_id) {
+        setConversationId(data.conversation_id);
+      }
+
       const answer: string =
         data.answer ?? data.response ?? data.text ?? JSON.stringify(data);
 
@@ -888,6 +1033,9 @@ export default function ChatPage() {
         ...prev,
         { id: uid(), role: "assistant", content: answer, sources },
       ]);
+
+      // Refresh the conversations list so the new/updated chat appears
+      fetchConversations(sessionId);
     } catch (err: unknown) {
       const errMsg =
         err instanceof Error
@@ -926,121 +1074,247 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Chat container */}
+      {/* Main layout: history sidebar + chat */}
       <div
-        className="flex flex-col bg-white border border-gray-100 rounded-3xl shadow-xs overflow-hidden"
+        className="flex gap-4"
         style={{ height: "calc(100vh - 220px)", minHeight: "480px" }}
       >
-        {/* Messages area */}
-        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
-          {/* Empty state */}
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-12">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-200">
-                <MessageSquare className="w-8 h-8 text-white" />
+        {/* ── Chat history sidebar ──────────────────────────────────────── */}
+        <div
+          className={`flex flex-col bg-white border border-gray-100 rounded-3xl shadow-xs overflow-hidden transition-all duration-300 ${
+            historySidebarOpen ? "w-72 min-w-[272px]" : "w-0 min-w-0 border-0 p-0"
+          }`}
+        >
+          {historySidebarOpen && (
+            <>
+              {/* Sidebar header */}
+              <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
+                <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-gray-400" />
+                  Chat History
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setHistorySidebarOpen(false)}
+                  className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
+                  title="Close history panel"
+                >
+                  <PanelLeftClose className="w-4 h-4" />
+                </button>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-gray-900 mb-1">
-                  Start a conversation
-                </h3>
-                <p className="text-gray-400 text-sm max-w-xs leading-relaxed">
-                  Ask any question about your uploaded documents. Use the
-                  document selector below to narrow the search scope.
-                </p>
+
+              {/* New chat button */}
+              <div className="px-3 pt-3 pb-2">
+                <button
+                  id="btn-new-chat"
+                  type="button"
+                  onClick={handleNewChat}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-xl transition-all shadow-md shadow-blue-100 active:scale-[0.98] cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  New Chat
+                </button>
               </div>
-              {readyDocs.length === 0 && !isLoadingDocs && (
-                <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-100 text-amber-700 rounded-xl text-sm">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                  <span>
-                    No ready documents yet.{" "}
-                    <a
-                      href="/knowledge-base"
-                      className="underline font-semibold"
+
+              {/* Conversations list */}
+              <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1">
+                {isLoadingConversations && (
+                  <div className="flex items-center justify-center py-8 text-gray-400 text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Loading…
+                  </div>
+                )}
+
+                {!isLoadingConversations && conversations.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-10 text-center">
+                    <MessageSquare className="w-8 h-8 text-gray-200 mb-2" />
+                    <p className="text-xs text-gray-400 leading-relaxed">
+                      No conversations yet.<br />Start chatting to see your history.
+                    </p>
+                  </div>
+                )}
+
+                {conversations.map((conv) => {
+                  const isActive = conversationId === conv.id;
+                  const date = new Date(conv.created_at);
+                  const dateStr = date.toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                  });
+                  const timeStr = date.toLocaleTimeString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  });
+
+                  return (
+                    <button
+                      key={conv.id}
+                      type="button"
+                      onClick={() => loadConversation(conv.id)}
+                      disabled={isLoadingConversation}
+                      className={`w-full text-left px-3 py-2.5 rounded-xl transition-all group cursor-pointer ${
+                        isActive
+                          ? "bg-blue-50 border border-blue-200 shadow-xs"
+                          : "hover:bg-gray-50 border border-transparent"
+                      }`}
                     >
-                      Upload documents
-                    </a>{" "}
-                    first.
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Message list */}
-          {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} documents={documents} />
-          ))}
-
-          {/* Typing indicator */}
-          {isAsking && (
-            <div className="flex justify-start">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mr-2.5 flex-shrink-0 shadow-sm">
-                <Sparkles className="w-4 h-4 text-white" />
+                      <p
+                        className={`text-sm font-medium truncate ${
+                          isActive ? "text-blue-800" : "text-gray-700"
+                        }`}
+                        title={conv.title}
+                      >
+                        {conv.title || "Untitled chat"}
+                      </p>
+                      <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {dateStr} · {timeStr}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
-              <div className="px-4 py-3 bg-white border border-gray-100 rounded-2xl rounded-bl-sm shadow-xs flex items-center gap-1.5">
-                <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0ms]" />
-                <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:150ms]" />
-                <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:300ms]" />
-              </div>
-            </div>
+            </>
           )}
-
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* Input bar */}
-        <div className="border-t border-gray-100 px-4 py-4 bg-slate-50/50">
-          {/* Scope indicator */}
-          <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-3 pl-1">
-            <BookOpen className="w-3.5 h-3.5" />
-            <span id="scope-indicator">
-              {isLoadingDocs ? "Loading documents…" : scopeText}
-            </span>
+        {/* Toggle button when sidebar is closed */}
+        {!historySidebarOpen && (
+          <button
+            type="button"
+            onClick={() => setHistorySidebarOpen(true)}
+            className="self-start mt-2 p-2 text-gray-400 hover:text-gray-600 bg-white border border-gray-100 rounded-xl shadow-xs hover:shadow-sm transition-all cursor-pointer"
+            title="Open chat history"
+          >
+            <PanelLeftOpen className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* ── Chat container ──────────────────────────────────────────────── */}
+        <div
+          className="flex-1 flex flex-col bg-white border border-gray-100 rounded-3xl shadow-xs overflow-hidden min-w-0"
+        >
+          {/* Loading conversation overlay */}
+          {isLoadingConversation && (
+            <div className="absolute inset-0 bg-white/70 backdrop-blur-sm z-10 flex items-center justify-center rounded-3xl">
+              <div className="flex items-center gap-2 text-blue-600 text-sm font-medium">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Loading conversation…
+              </div>
+            </div>
+          )}
+
+          {/* Messages area */}
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+            {/* Empty state */}
+            {messages.length === 0 && !isLoadingConversation && (
+              <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-12">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-200">
+                  <MessageSquare className="w-8 h-8 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-1">
+                    Start a conversation
+                  </h3>
+                  <p className="text-gray-400 text-sm max-w-xs leading-relaxed">
+                    Ask any question about your uploaded documents. Use the
+                    document selector below to narrow the search scope.
+                  </p>
+                </div>
+                {readyDocs.length === 0 && !isLoadingDocs && (
+                  <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-100 text-amber-700 rounded-xl text-sm">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                    <span>
+                      No ready documents yet.{" "}
+                      <a
+                        href="/knowledge-base"
+                        className="underline font-semibold"
+                      >
+                        Upload documents
+                      </a>{" "}
+                      first.
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Message list */}
+            {messages.map((msg) => (
+              <ChatMessage key={msg.id} message={msg} documents={documents} />
+            ))}
+
+            {/* Typing indicator */}
+            {isAsking && (
+              <div className="flex justify-start">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mr-2.5 flex-shrink-0 shadow-sm">
+                  <Sparkles className="w-4 h-4 text-white" />
+                </div>
+                <div className="px-4 py-3 bg-white border border-gray-100 rounded-2xl rounded-bl-sm shadow-xs flex items-center gap-1.5">
+                  <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                  <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                  <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:300ms]" />
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
 
-          <div className="flex items-end gap-3">
-            {/* Document selector */}
-            <DocumentSelector
-              documents={documents}
-              selectedIds={selectedIds}
-              allSelected={allSelected}
-              onToggleAll={handleToggleAll}
-              onToggleDoc={handleToggleDoc}
-              isLoading={isLoadingDocs}
-              isError={isDocsError}
-              onRefresh={fetchDocuments}
-            />
-
-            {/* Text input */}
-            <div className="flex-1">
-              <textarea
-                ref={textareaRef}
-                id="chat-input"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={handleKeyDown}
-                disabled={isAsking}
-                placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"
-                rows={1}
-                className="w-full resize-none bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition-all disabled:opacity-60 shadow-xs"
-              />
+          {/* Input bar */}
+          <div className="border-t border-gray-100 px-4 py-4 bg-slate-50/50">
+            {/* Scope indicator */}
+            <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-3 pl-1">
+              <BookOpen className="w-3.5 h-3.5" />
+              <span id="scope-indicator">
+                {isLoadingDocs ? "Loading documents…" : scopeText}
+              </span>
             </div>
 
-            {/* Send */}
-            <button
-              id="chat-submit"
-              type="button"
-              onClick={handleSubmit}
-              disabled={!question.trim() || isAsking}
-              className="flex-shrink-0 w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white flex items-center justify-center transition-all shadow-md shadow-blue-100 disabled:shadow-none active:scale-95 cursor-pointer"
-              title="Send message"
-            >
-              {isAsking ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-            </button>
+            <div className="flex items-end gap-3">
+              {/* Document selector */}
+              <DocumentSelector
+                documents={documents}
+                selectedIds={selectedIds}
+                allSelected={allSelected}
+                onToggleAll={handleToggleAll}
+                onToggleDoc={handleToggleDoc}
+                isLoading={isLoadingDocs}
+                isError={isDocsError}
+                onRefresh={fetchDocuments}
+              />
+
+              {/* Text input */}
+              <div className="flex-1">
+                <textarea
+                  ref={textareaRef}
+                  id="chat-input"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={isAsking}
+                  placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"
+                  rows={1}
+                  className="w-full resize-none bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition-all disabled:opacity-60 shadow-xs"
+                />
+              </div>
+
+              {/* Send */}
+              <button
+                id="chat-submit"
+                type="button"
+                onClick={handleSubmit}
+                disabled={!question.trim() || isAsking}
+                className="flex-shrink-0 w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white flex items-center justify-center transition-all shadow-md shadow-blue-100 disabled:shadow-none active:scale-95 cursor-pointer"
+                title="Send message"
+              >
+                {isAsking ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
