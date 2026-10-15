@@ -1,15 +1,17 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import {
   X,
   UploadCloud,
   FileText,
-  Trash2,
   FileCode,
   FileIcon,
   Loader2,
   XCircle,
+  Lock,
+  Sparkles,
+  CheckCircle2,
 } from "lucide-react";
 
 export interface DocumentItem {
@@ -36,20 +38,67 @@ interface UploadedFile {
 }
 
 export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocumentModalProps) {
-  const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [isLoadingDemo, setIsLoadingDemo] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const resetForm = () => {
-    setFiles([]);
-    setIsUploading(false);
-    setUploadError(null);
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
+  // Pre-load demo file sample_rag_notes.pdf when modal is opened
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let isMounted = true;
+    setIsLoadingDemo(true);
+    setUploadError(null);
+
+    const loadDemoFile = async () => {
+      try {
+        const response = await fetch("/sample_rag_notes.pdf");
+        if (!response.ok) {
+          throw new Error("Could not find demo file /sample_rag_notes.pdf");
+        }
+        const blob = await response.blob();
+        const demoFile = new File([blob], "sample_rag_notes.pdf", {
+          type: "application/pdf",
+        });
+
+        if (isMounted) {
+          setFiles([
+            {
+              id: "demo-sample-rag-notes",
+              file: demoFile,
+              name: "sample_rag_notes.pdf",
+              size: formatFileSize(blob.size || 3493),
+              type: "pdf",
+            },
+          ]);
+          setIsLoadingDemo(false);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          console.error("Error loading demo file:", err);
+          setUploadError("Could not load the sample demo file. Please ensure /sample_rag_notes.pdf exists.");
+          setIsLoadingDemo(false);
+        }
+      }
+    };
+
+    loadDemoFile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
   const handleClose = () => {
-    resetForm();
+    setIsUploading(false);
+    setUploadError(null);
     onClose();
   };
 
@@ -78,48 +127,20 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
 
   if (!isOpen) return null;
 
-  const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  };
-
-  const handleFileSelect = (selectedFiles: FileList | null) => {
-    if (!selectedFiles) return;
-    const newFiles: UploadedFile[] = Array.from(selectedFiles).map((file) => ({
-      id: Math.random().toString(36).substring(2, 9),
-      file,
-      name: file.name,
-      size: formatFileSize(file.size),
-      type: file.name.split(".").pop()?.toLowerCase() || "",
-    }));
-
-    setFiles((prev) => [...prev, ...newFiles]);
-  };
-
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileSelect(e.dataTransfer.files);
-    }
-  };
-
-  const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+    // Locked: Custom user uploads are disabled in demo mode
   };
 
   const getFileIcon = (ext: string) => {
@@ -138,7 +159,7 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
   };
 
   const handleUpload = async () => {
-    if (files.length === 0) return;
+    if (files.length === 0 || isLoadingDemo) return;
 
     setIsUploading(true);
     setUploadError(null);
@@ -193,13 +214,13 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
         onUploadSuccess(createdDocs);
       }
 
-      // Close the modal immediately after receiving doc_id/response
+      // Close modal immediately after successful response
       handleClose();
     } catch (err: any) {
       setIsUploading(false);
       setUploadError(
         err.message ||
-          "Failed to upload files. Please check if the backend is running at http://127.0.0.1:8000."
+          "Failed to upload file. Please check if the backend is running at http://127.0.0.1:8000."
       );
     }
   };
@@ -217,18 +238,46 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
         {/* Close Button */}
         <button
           onClick={handleClose}
-          className="absolute top-5 right-5 text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100 transition-colors focus:outline-none"
+          className="absolute top-5 right-5 text-gray-400 hover:text-gray-600 p-2 rounded-full hover:bg-gray-100 transition-colors focus:outline-none cursor-pointer"
           aria-label="Close modal"
         >
           <X className="w-5 h-5" />
         </button>
 
         {/* Modal Header */}
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Add document</h2>
+        <div className="mb-5">
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Add document</h2>
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200/80 px-2.5 py-0.5 rounded-full">
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              Demo Mode
+            </span>
+          </div>
           <p className="text-gray-500 text-sm mt-1 leading-relaxed">
-            Upload documents to your knowledge base. Supported formats: PDF, DOCX, MD, and TXT files.
+            Test document ingestion and embedding indexing with our pre-loaded demo document.
           </p>
+        </div>
+
+        {/* Notice Banner */}
+        <div className="mb-5 p-4 rounded-2xl bg-gradient-to-r from-amber-50 via-amber-50/70 to-orange-50/40 border border-amber-200/80 text-amber-900 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-amber-100 text-amber-700 rounded-xl shrink-0 mt-0.5 shadow-xs">
+              <Lock className="w-4 h-4 text-amber-700" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wide">
+                  Testing Notice
+                </span>
+                <span className="text-[10px] font-semibold bg-amber-200/70 text-amber-900 px-2 py-0.5 rounded-full">
+                  Locked
+                </span>
+              </div>
+              <p className="text-xs text-amber-800 leading-relaxed font-medium">
+                curently users can only test this app with the demo file , for many uploads you need to go premuim
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Error Alert (if upload POST request failed) */}
@@ -242,90 +291,93 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
           </div>
         )}
 
-        {/* Drop Files Area */}
+        {/* Drop Files Area - Locked to Demo File Only */}
         <div className="mb-6">
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center ${
-              isDragging
-                ? "border-blue-500 bg-blue-50/60 scale-[0.99]"
-                : "border-gray-200 hover:border-blue-400 bg-slate-50/50 hover:bg-blue-50/20"
-            }`}
+            className="relative border-2 border-dashed border-amber-200/90 bg-gradient-to-b from-amber-50/30 to-slate-50/60 rounded-2xl p-6 text-center cursor-not-allowed select-none transition-all flex flex-col items-center justify-center"
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".pdf,.docx,.doc,.md,.markdown,.txt"
-              className="hidden"
-              onChange={(e) => handleFileSelect(e.target.files)}
-            />
-
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-3 shadow-sm border border-blue-100/50">
-              <UploadCloud className="w-7 h-7" />
+            <div className="w-13 h-13 rounded-2xl bg-amber-100/80 text-amber-700 flex items-center justify-center mb-3 shadow-xs border border-amber-200/60 relative">
+              <UploadCloud className="w-6 h-6 text-amber-600" />
+              <div className="absolute -bottom-1 -right-1 bg-amber-600 text-white p-1 rounded-full shadow-xs">
+                <Lock className="w-2.5 h-2.5" />
+              </div>
             </div>
 
-            <p className="text-sm font-semibold text-gray-800 mb-1">
-              Drop files here, or <span className="text-blue-600 underline">browse</span>
-            </p>
-            <p className="text-xs text-gray-400 max-w-xs">
-              Supports PDF, DOCX, MD, and TXT files up to 25MB each
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold mb-1.5">
+              <Lock className="w-3 h-3" />
+              <span>Upload Locked to Demo File</span>
+            </div>
+
+            <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+              curently users can only test this app with the demo file , for many uploads you need to go premuim
             </p>
           </div>
 
-          {/* List of Attached Files (if any) */}
-          {files.length > 0 && (
-            <div className="mt-3 space-y-2 max-h-40 overflow-y-auto pr-1">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-xs font-semibold text-gray-500">
-                  Selected files ({files.length})
-                </span>
-                <button
-                  onClick={() => setFiles([])}
-                  className="text-xs text-gray-400 hover:text-red-500"
-                >
-                  Clear all
-                </button>
-              </div>
-              {files.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between p-2.5 bg-white border border-gray-100 rounded-xl shadow-xs"
-                >
-                  <div className="flex items-center gap-2.5 overflow-hidden">
-                    {getFileIcon(item.type)}
-                    <span className="text-xs font-medium text-gray-700 truncate max-w-[200px]">
-                      {item.name}
-                    </span>
-                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-                      {item.size}
-                    </span>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeFile(item.id);
-                    }}
-                    className="text-gray-400 hover:text-red-500 p-1 rounded-md"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
+          {/* Attached Demo File Section */}
+          <div className="mt-4">
+            <div className="flex items-center justify-between px-1 mb-2">
+              <span className="text-xs font-semibold text-gray-600">
+                Selected Demo File
+              </span>
+              <span className="text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Demo Ready
+              </span>
             </div>
-          )}
+
+            {isLoadingDemo ? (
+              <div className="flex items-center justify-center p-4 bg-slate-50 border border-gray-100 rounded-xl text-gray-500 text-xs gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                <span>Loading demo file (sample_rag_notes.pdf)...</span>
+              </div>
+            ) : files.length > 0 ? (
+              <div className="space-y-2">
+                {files.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between p-3 bg-white border border-gray-200/90 rounded-xl shadow-xs"
+                  >
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="p-2 bg-red-50 rounded-lg">
+                        {getFileIcon(item.type)}
+                      </div>
+                      <div className="truncate">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-gray-800 truncate">
+                            {item.name}
+                          </span>
+                          <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-100">
+                            Demo
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-gray-400">
+                          {item.size} • PDF Document
+                        </span>
+                      </div>
+                    </div>
+                    <div
+                      className="flex items-center gap-1.5 text-xs text-gray-500 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-100"
+                      title="Custom uploads disabled"
+                    >
+                      <Lock className="w-3.5 h-3.5 text-gray-400" />
+                      <span className="text-[11px] font-medium text-gray-600">Locked</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {/* Action Button */}
         <div>
           <button
             onClick={handleUpload}
-            disabled={files.length === 0 || isUploading}
+            disabled={files.length === 0 || isUploading || isLoadingDemo}
             className={`w-full py-3.5 px-6 rounded-xl font-medium text-sm transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer ${
-              files.length === 0 || isUploading
+              files.length === 0 || isUploading || isLoadingDemo
                 ? "bg-gray-100 text-gray-400 cursor-not-allowed shadow-none"
                 : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-100 active:scale-[0.99]"
             }`}
@@ -333,12 +385,12 @@ export function AddDocumentModal({ isOpen, onClose, onUploadSuccess }: AddDocume
             {isUploading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Uploading...</span>
+                <span>Uploading demo file...</span>
               </>
             ) : (
               <>
                 <UploadCloud className="w-4 h-4" />
-                <span>Upload file{files.length > 1 ? "s" : ""}</span>
+                <span>Upload Demo File</span>
               </>
             )}
           </button>

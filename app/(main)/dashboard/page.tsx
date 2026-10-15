@@ -46,7 +46,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <QuickActionCard
             id="action-create-kb"
-            href="/knowledge-base/new"
+            href="/knowledge-base"
             icon={Brain}
             iconBgClass="bg-blue-50"
             iconColorClass="text-blue-500"
@@ -58,7 +58,7 @@ export default function DashboardPage() {
 
           <QuickActionCard
             id="action-upload"
-            href="/knowledge-base/upload"
+            href="/knowledge-base"
             icon={UploadCloud}
             iconBgClass="bg-indigo-50"
             iconColorClass="text-indigo-500"
