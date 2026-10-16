@@ -76,9 +76,8 @@ export function Sidebar() {
 
       {/* Sidebar Container */}
       <aside
-        className={`w-64 bg-white border-r border-gray-100 flex flex-col fixed h-full z-40 transition-transform duration-200 ease-in-out ${
-          mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
-        } top-0 left-0`}
+        className={`w-64 bg-white border-r border-gray-100 flex flex-col fixed h-full z-40 transition-transform duration-200 ease-in-out ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+          } top-0 left-0`}
       >
         <div className="p-6 flex items-center gap-3">
           <div className="flex gap-0.5">
@@ -103,11 +102,10 @@ export function Sidebar() {
                 href={item.href}
                 id={item.id}
                 onClick={() => setMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors ${
-                  isActive
+                className={`flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors ${isActive
                     ? "sidebar-item-active"
                     : "text-gray-500 hover:text-gray-900 hover:bg-gray-50"
-                }`}
+                  }`}
               >
                 <Icon className="text-xl w-5 h-5 shrink-0" />
                 <span>{item.name}</span>
@@ -116,17 +114,6 @@ export function Sidebar() {
           })}
         </nav>
 
-        <div className="p-4 mt-auto border-t border-gray-100">
-          <Link
-            href="/auth/signout"
-            id="btn-signout"
-            onClick={() => setMobileOpen(false)}
-            className="flex items-center gap-3 px-3 py-2.5 text-sm text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <LogOut className="text-xl w-5 h-5 shrink-0" />
-            <span>Sign out</span>
-          </Link>
-        </div>
       </aside>
     </>
   );
