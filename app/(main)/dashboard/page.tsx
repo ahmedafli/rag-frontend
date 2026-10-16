@@ -1,4 +1,6 @@
-import React from "react";
+"use client";
+
+import React, { useState, useEffect } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { HeroSection } from "@/components/HeroSection";
 import { StatsCard } from "@/components/StatsCard";
@@ -6,7 +8,46 @@ import { QuickActionCard } from "@/components/QuickActionCard";
 import { HowItWorks } from "@/components/HowItWorks";
 import { Database, MessageCircle, Brain, UploadCloud, Sparkles } from "lucide-react";
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+const SESSION_KEY = "rag_session_id";
+
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") return "";
+  let sid = localStorage.getItem(SESSION_KEY);
+  if (!sid) {
+    sid = crypto.randomUUID();
+    localStorage.setItem(SESSION_KEY, sid);
+  }
+  return sid;
+}
+
 export default function DashboardPage() {
+  const [kbCount, setKbCount] = useState<number | null>(null);
+  const [chatCount, setChatCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Fetch knowledge base (documents) count
+    fetch(`${API_BASE_URL}/documents`)
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => {
+        if (Array.isArray(data)) setKbCount(data.length);
+      })
+      .catch(() => setKbCount(0));
+
+    // Fetch chat session (conversations) count using the same session_id as the chat page
+    const sid = getOrCreateSessionId();
+    if (sid) {
+      fetch(`${API_BASE_URL}/conversations?session_id=${encodeURIComponent(sid)}`)
+        .then((res) => (res.ok ? res.json() : Promise.reject()))
+        .then((data) => {
+          if (Array.isArray(data)) setChatCount(data.length);
+        })
+        .catch(() => setChatCount(0));
+    } else {
+      setChatCount(0);
+    }
+  }, []);
+
   return (
     <>
       {/* Breadcrumbs */}
@@ -22,7 +63,7 @@ export default function DashboardPage() {
           icon={Database}
           iconBgClass="bg-blue-50"
           iconColorClass="text-blue-500"
-          count={3}
+          count={kbCount ?? 0}
           label="Knowledge Bases"
           linkHref="/knowledge-base"
           linkLabel="View all knowledge bases"
@@ -33,7 +74,7 @@ export default function DashboardPage() {
           icon={MessageCircle}
           iconBgClass="bg-indigo-50"
           iconColorClass="text-indigo-500"
-          count={2}
+          count={chatCount ?? 0}
           label="Chat Sessions"
           linkHref="/chat"
           linkLabel="View all chat sessions"
